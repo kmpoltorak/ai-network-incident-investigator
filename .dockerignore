@@ -6,3 +6,5 @@ bin
 docs
 deployments
 *.md
+web/node_modules
+internal/api/ui/dist

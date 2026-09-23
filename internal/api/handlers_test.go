@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -266,5 +267,30 @@ func TestRequestIDs(t *testing.T) {
 	resp, _ = do(t, "GET", srv.URL+"/health", "", "X-Request-ID", "bad id with spaces")
 	if got := resp.Header.Get("X-Request-ID"); got == "" || strings.ContainsAny(got, " \n") {
 		t.Fatalf("unsafe request id accepted: %q", got)
+	}
+}
+
+func TestWebUI(t *testing.T) {
+	srv := newServer(t, llm.RulesProvider{}, nil)
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+		t.Fatalf("/: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	if !strings.Contains(resp.Header.Get("Content-Security-Policy"), "default-src 'self'") {
+		t.Fatal("missing CSP")
+	}
+	// When the frontend is built, its hashed assets must be served too.
+	if m := regexp.MustCompile(`/assets/[\w.-]+\.js`).Find(page); m != nil {
+		if r, _ := do(t, "GET", srv.URL+string(m), ""); r.StatusCode != 200 {
+			t.Fatalf("%s: %d", m, r.StatusCode)
+		}
+	}
+	if resp, _ := do(t, "GET", srv.URL+"/nope", ""); resp.StatusCode != 404 {
+		t.Errorf("unknown path: %d", resp.StatusCode)
 	}
 }

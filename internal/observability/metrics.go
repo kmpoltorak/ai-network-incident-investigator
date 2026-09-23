@@ -26,7 +26,7 @@ var (
 
 	InvestigationDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name: "investigation_duration_seconds", Help: "End-to-end investigation duration.",
-		Buckets: []float64{0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120},
+		Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120},
 	})
 
 	ToolExecutionsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -43,7 +43,8 @@ var (
 
 	LLMRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "llm_request_duration_seconds", Help: "LLM analysis request latency.",
-		Buckets: []float64{0.1, 0.5, 1, 2.5, 5, 10, 30, 60},
+		// Low buckets cover the in-process rules provider; high ones cover local LLMs.
+		Buckets: []float64{0.001, 0.01, 0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120},
 	}, []string{"provider"})
 
 	LLMFailuresTotal = promauto.NewCounterVec(prometheus.CounterOpts{
