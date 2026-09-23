@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: incident-investigator
+data:
+  APP_ENV: production
+  HTTP_PORT: "8080"
+  LOG_LEVEL: info
+  LLM_PROVIDER: rules
+  LLM_MODEL: ""
+  LLM_TIMEOUT: 60s
+  OLLAMA_BASE_URL: http://ollama.ollama.svc.cluster.local:11434
+  SIMULATION_ENABLED: "true"
+  SIMULATION_SCENARIO: healthy
+  INVESTIGATION_TIMEOUT: 90s
+  MAX_CONCURRENT_INVESTIGATIONS: "4"

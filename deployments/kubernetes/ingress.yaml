@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: incident-investigator
+  annotations:
+    # Per-client rate limiting lives at the edge (ingress-nginx).
+    nginx.ingress.kubernetes.io/limit-rps: "5"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "3"
+    # Investigations run synchronously and can take up to INVESTIGATION_TIMEOUT.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: investigator.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: incident-investigator
+                port:
+                  name: http
