@@ -68,7 +68,8 @@ func observe(log *slog.Logger, next http.Handler) http.Handler {
 		elapsed := time.Since(start)
 		observability.HTTPRequestsTotal.WithLabelValues(r.Method, route, strconv.Itoa(rec.status)).Inc()
 		observability.HTTPRequestDuration.WithLabelValues(r.Method, route).Observe(elapsed.Seconds())
-		if route != "GET /metrics" && route != "GET /health" {
+		// Probe and scrape endpoints are polled constantly; keep them out of the access log.
+		if route != "GET /metrics" && route != "GET /health" && route != "GET /ready" {
 			log.InfoContext(r.Context(), "http request", "method", r.Method, "route", route,
 				"status", rec.status, "duration_ms", elapsed.Milliseconds())
 		}

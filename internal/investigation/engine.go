@@ -54,6 +54,9 @@ type Engine struct {
 }
 
 func NewEngine(store Store, toolbox Toolbox, provider llm.Provider, log *slog.Logger, cfg Config) *Engine {
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = 90 * time.Second
+	}
 	if cfg.ToolTimeout <= 0 {
 		cfg.ToolTimeout = 10 * time.Second
 	}
@@ -101,7 +104,11 @@ func (e *Engine) Investigate(ctx context.Context, incidentID string, opts Option
 
 	target := diagnostics.Target{Host: inc.TargetHost, Port: inc.TargetPort}
 	for _, name := range plan(inc) {
-		te, ev := e.runTool(ctx, log, tools[name], target)
+		tool, ok := tools[name]
+		if !ok {
+			tool = unavailableTool(name)
+		}
+		te, ev := e.runTool(ctx, log, tool, target)
 		rec.ToolExecutions = append(rec.ToolExecutions, te)
 		if ev != nil {
 			rec.Evidence = append(rec.Evidence, *ev)
@@ -233,4 +240,14 @@ func initMetrics(provider string) {
 	for _, reason := range []string{"request", "invalid_output"} {
 		observability.LLMFailuresTotal.WithLabelValues(provider, reason)
 	}
+}
+
+// unavailableTool stands in for a planned tool the toolbox did not provide,
+// so the gap is recorded as a failed execution instead of crashing.
+type unavailableTool string
+
+func (u unavailableTool) Name() string { return string(u) }
+
+func (u unavailableTool) Run(context.Context, diagnostics.Target) (diagnostics.Result, error) {
+	return diagnostics.Result{}, fmt.Errorf("tool %q is not available", string(u))
 }
