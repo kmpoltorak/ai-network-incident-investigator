@@ -175,7 +175,7 @@ func TestToolbox(t *testing.T) {
 		t.Fatal("unknown scenario accepted")
 	}
 
-	real, _ := NewToolbox(false, "")
+	live, _ := NewToolbox(false, "")
 	tools, s, err := live.Tools("")
 	if err != nil || s != "" || len(tools) != 3 {
 		t.Fatalf("real toolbox: %v %q %d", err, s, len(tools))
