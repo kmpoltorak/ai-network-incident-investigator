@@ -9,10 +9,10 @@ import (
 	"github.com/kmpoltorak/ai-network-incident-investigator/internal/llm"
 )
 
-// EvalCases pairs each simulation scenario with a realistic incident and the
-// root-cause category a correct analysis must name. tests/eval_test.go runs
-// the same cases against a live LLM.
-var EvalCases = []struct {
+// evalCases pairs each simulation scenario with a realistic incident and the
+// root-cause category a correct analysis must name. eval_live_test.go runs
+// the same cases against a real LLM.
+var evalCases = []struct {
 	Scenario string
 	Incident domain.Incident
 	Keywords []string // root cause must contain at least one (case-insensitive)
@@ -29,7 +29,7 @@ var EvalCases = []struct {
 		[]string{"no network", "not network", "no fault", "application"}},
 }
 
-func MatchesKeywords(rootCause string, keywords []string) bool {
+func matchesKeywords(rootCause string, keywords []string) bool {
 	rc := strings.ToLower(rootCause)
 	for _, k := range keywords {
 		if strings.Contains(rc, k) {
@@ -42,14 +42,14 @@ func MatchesKeywords(rootCause string, keywords []string) bool {
 // TestEvaluationRulesProvider is the deterministic AI evaluation: every
 // scenario must produce a valid report naming the expected root cause.
 func TestEvaluationRulesProvider(t *testing.T) {
-	for _, tc := range EvalCases {
+	for _, tc := range evalCases {
 		t.Run(tc.Scenario, func(t *testing.T) {
 			e := newEngine(newMemStore(tc.Incident), simToolbox(t), llm.RulesProvider{})
 			rec, err := e.Investigate(context.Background(), tc.Incident.ID, Options{Scenario: tc.Scenario})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !MatchesKeywords(rec.Report.Analysis.RootCause, tc.Keywords) {
+			if !matchesKeywords(rec.Report.Analysis.RootCause, tc.Keywords) {
 				t.Fatalf("root cause %q does not match any of %v", rec.Report.Analysis.RootCause, tc.Keywords)
 			}
 		})

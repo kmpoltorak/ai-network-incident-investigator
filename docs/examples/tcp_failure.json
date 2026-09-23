@@ -1,0 +1,6 @@
+{
+  "title": "Application cannot connect to the database service",
+  "description": "The order service logs 'connection refused' when connecting to PostgreSQL after the database host was patched and rebooted.",
+  "target_host": "db.corp.example.com",
+  "target_port": 5432
+}
