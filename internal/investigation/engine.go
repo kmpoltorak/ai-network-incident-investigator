@@ -78,7 +78,7 @@ func (e *Engine) Investigate(ctx context.Context, incidentID string, opts Option
 
 	tools, scenario, err := e.toolbox.Tools(opts.Scenario)
 	if err != nil {
-		return domain.InvestigationRecord{}, fmt.Errorf("%w: %v", ErrInvalidOptions, err)
+		return domain.InvestigationRecord{}, fmt.Errorf("%w: %w", ErrInvalidOptions, err)
 	}
 	inc, err := e.store.GetIncident(ctx, incidentID)
 	if err != nil {
@@ -132,7 +132,7 @@ func (e *Engine) Investigate(ctx context.Context, incidentID string, opts Option
 	log.InfoContext(ctx, "investigation finished", "status", rec.Investigation.Status, "duration_ms", duration.Milliseconds())
 
 	if analysisErr != nil {
-		return rec, fmt.Errorf("%w: %v", ErrAnalysisFailed, analysisErr)
+		return rec, fmt.Errorf("%w: %w", ErrAnalysisFailed, analysisErr)
 	}
 	return rec, nil
 }
@@ -194,7 +194,7 @@ func (e *Engine) analyze(ctx context.Context, log *slog.Logger, inc domain.Incid
 			sources[i] = ev.Source
 		}
 		if verr := analysis.Validate(sources); verr != nil {
-			err = fmt.Errorf("%w: %v", llm.ErrInvalidOutput, verr)
+			err = fmt.Errorf("%w: %w", llm.ErrInvalidOutput, verr)
 		}
 	}
 	if err != nil {

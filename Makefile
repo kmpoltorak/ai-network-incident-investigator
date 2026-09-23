@@ -37,7 +37,7 @@ test-integration: test-db
 lint:
 	test -z "$$(gofmt -l .)" || (gofmt -l . && exit 1)
 	go vet ./...
-	golangci-lint run
+	golangci-lint run --build-tags integration,eval
 
 fmt:
 	gofmt -w .

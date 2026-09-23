@@ -43,6 +43,7 @@ func (p PingTool) Run(ctx context.Context, t Target) (Result, error) {
 		return Result{}, err
 	}
 	count := max(p.Count, 1)
+	// #nosec G204 -- host passed Target.Validate (hostname/IP only), argv is fixed, no shell.
 	out, err := exec.CommandContext(ctx, "ping", "-n", "-c", strconv.Itoa(count), "--", t.Host).CombinedOutput()
 	// ping exits non-zero on packet loss; the output is still meaningful.
 	var exitErr *exec.ExitError

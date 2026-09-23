@@ -56,7 +56,7 @@ func decodeAnalysis(content string) (domain.Analysis, error) {
 	dec.DisallowUnknownFields()
 	var a domain.Analysis
 	if err := dec.Decode(&a); err != nil {
-		return domain.Analysis{}, fmt.Errorf("%w: %v", ErrInvalidOutput, err)
+		return domain.Analysis{}, fmt.Errorf("%w: %w", ErrInvalidOutput, err)
 	}
 	if dec.More() {
 		return domain.Analysis{}, fmt.Errorf("%w: trailing data after JSON object", ErrInvalidOutput)
@@ -92,7 +92,7 @@ func postJSON(ctx context.Context, client *http.Client, url string, headers map[
 		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, truncate(string(data), 300))
 	}
 	if err := json.Unmarshal(data, out); err != nil {
-		return fmt.Errorf("%w: decode response envelope: %v", ErrInvalidOutput, err)
+		return fmt.Errorf("%w: decode response envelope: %w", ErrInvalidOutput, err)
 	}
 	return nil
 }
