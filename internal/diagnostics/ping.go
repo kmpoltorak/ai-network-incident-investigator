@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/kmpoltorak/ai-network-incident-investigator/internal/domain"
 )
@@ -53,7 +54,7 @@ func (p PingTool) Run(ctx context.Context, t Target) (Result, error) {
 	}
 	r, perr := parsePing(string(out))
 	if perr != nil {
-		return Result{}, fmt.Errorf("ping %s: %w: %s", t.Host, perr, truncate(string(out), 200))
+		return Result{}, fmt.Errorf("ping %s: %w: %s", t.Host, perr, truncate(strings.TrimSpace(string(out)), 200))
 	}
 	r.Target = t.Host
 	return r.result(), nil
