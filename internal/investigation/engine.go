@@ -129,7 +129,7 @@ func (e *Engine) Investigate(ctx context.Context, incidentID string, opts Option
 	duration := time.Since(start)
 	observability.InvestigationsTotal.WithLabelValues(string(rec.Investigation.Status)).Inc()
 	observability.InvestigationDuration.Observe(duration.Seconds())
-	log.InfoContext(ctx, "investigation finished", "status", rec.Investigation.Status, "duration", duration)
+	log.InfoContext(ctx, "investigation finished", "status", rec.Investigation.Status, "duration_ms", duration.Milliseconds())
 
 	if analysisErr != nil {
 		return rec, fmt.Errorf("%w: %v", ErrAnalysisFailed, analysisErr)
@@ -167,12 +167,12 @@ func (e *Engine) runTool(ctx context.Context, log *slog.Logger, tool diagnostics
 	if err != nil {
 		te.Status, te.Error = domain.ToolFailed, err.Error()
 		observability.ToolFailuresTotal.WithLabelValues(name).Inc()
-		log.WarnContext(ctx, "diagnostic failed", "tool_name", name, "duration", te.DurationMs, "status", te.Status, "error", err)
+		log.WarnContext(ctx, "diagnostic failed", "tool_name", name, "duration_ms", te.DurationMs, "status", te.Status, "error", err)
 		return te, nil
 	}
 	te.Status, te.Output = domain.ToolSucceeded, output
 	observability.ToolExecutionsTotal.WithLabelValues(name, string(res.Health)).Inc()
-	log.InfoContext(ctx, "diagnostic completed", "tool_name", name, "duration", te.DurationMs, "status", te.Status, "health", res.Health)
+	log.InfoContext(ctx, "diagnostic completed", "tool_name", name, "duration_ms", te.DurationMs, "status", te.Status, "health", res.Health)
 	return te, &domain.Evidence{
 		ID: domain.NewID(), ToolExecutionID: te.ID, Source: name, Health: res.Health, Summary: res.Summary, Data: output,
 	}
