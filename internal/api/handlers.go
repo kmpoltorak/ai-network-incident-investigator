@@ -44,7 +44,8 @@ func New(svc *incidents.Service, engine *investigation.Engine, ready func(contex
 	mux.HandleFunc("GET /health", h.health)
 	mux.HandleFunc("GET /ready", h.readiness)
 	mux.Handle("GET /metrics", promhttp.Handler())
-	return recoverPanics(log, withRequestIDs(observe(log, mux)))
+	registerUI(mux)
+	return recoverPanics(log, securityHeaders(withRequestIDs(observe(log, mux))))
 }
 
 func (h *Handler) createIncident(w http.ResponseWriter, r *http.Request) {
