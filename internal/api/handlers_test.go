@@ -142,7 +142,7 @@ func TestIncidentLifecycle(t *testing.T) {
 		t.Fatalf("list: %d %v", resp.StatusCode, out)
 	}
 
-	resp, out = do(t, "GET", srv.URL+"/api/v1/incidents/"+id+"/report", "")
+	resp, _ = do(t, "GET", srv.URL+"/api/v1/incidents/"+id+"/report", "")
 	if resp.StatusCode != 404 {
 		t.Fatalf("report before investigation: %d", resp.StatusCode)
 	}
