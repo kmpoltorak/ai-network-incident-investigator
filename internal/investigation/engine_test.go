@@ -9,9 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/kmpoltorak/ai-network-incident-investigator/internal/diagnostics"
 	"github.com/kmpoltorak/ai-network-incident-investigator/internal/domain"
 	"github.com/kmpoltorak/ai-network-incident-investigator/internal/llm"
+	"github.com/kmpoltorak/ai-network-incident-investigator/internal/observability"
 )
 
 type memStore struct {
@@ -237,5 +241,23 @@ func TestCanceledRequestStillPersistsFinalStatus(t *testing.T) {
 	}
 	if store.finished[0].Investigation.Status != domain.InvestigationFailed || store.finishErr != nil {
 		t.Fatal("final status must be persisted with a live context")
+	}
+}
+
+func TestMetricsInitializedAtStartup(t *testing.T) {
+	newEngine(newMemStore(), simToolbox(t), llm.RulesProvider{})
+	// Metrics are process-global, so assert the series exist rather than their values.
+	for name, tc := range map[string]struct {
+		c    prometheus.Collector
+		want int
+	}{
+		"investigations_total":             {observability.InvestigationsTotal, 2},
+		"diagnostic_tool_executions_total": {observability.ToolExecutionsTotal, 9},
+		"diagnostic_tool_failures_total":   {observability.ToolFailuresTotal, 3},
+		"llm_failures_total":               {observability.LLMFailuresTotal, 2},
+	} {
+		if n := testutil.CollectAndCount(tc.c); n < tc.want {
+			t.Errorf("%s: %d series, want at least %d", name, n, tc.want)
+		}
 	}
 }
