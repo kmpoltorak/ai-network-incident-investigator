@@ -37,7 +37,7 @@ type Config struct {
 var defaultModels = map[string]string{
 	"rules":  "rules-v1",
 	"openai": "gpt-4o-mini",
-	"ollama": "llama3.1",
+	"ollama": "llama3.2",
 }
 
 // Load reads configuration using getenv (typically os.Getenv) and validates it.

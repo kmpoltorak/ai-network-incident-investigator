@@ -28,7 +28,7 @@ func TestLoadProviderDefaultModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.LLMProvider != "ollama" || c.LLMModel != "llama3.1" {
+	if c.LLMProvider != "ollama" || c.LLMModel != "llama3.2" {
 		t.Fatalf("got provider=%s model=%s", c.LLMProvider, c.LLMModel)
 	}
 }
