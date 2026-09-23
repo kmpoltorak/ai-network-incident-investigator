@@ -261,3 +261,22 @@ func TestMetricsInitializedAtStartup(t *testing.T) {
 		}
 	}
 }
+
+func TestMissingToolIsRecordedAsFailure(t *testing.T) {
+	sim, _, _ := simToolbox(t).Tools("healthy")
+	tb := staticToolbox{"dns": sim["dns"], "tcp": sim["tcp"]} // no ping
+	rec, err := newEngine(newMemStore(incident), tb, llm.RulesProvider{}).Investigate(context.Background(), incident.ID, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if te := rec.ToolExecutions[1]; te.ToolName != "ping" || te.Status != domain.ToolFailed {
+		t.Fatalf("ping execution = %+v", te)
+	}
+}
+
+func TestZeroTimeoutUsesDefault(t *testing.T) {
+	e := NewEngine(newMemStore(incident), simToolbox(t), llm.RulesProvider{}, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{})
+	if _, err := e.Investigate(context.Background(), incident.ID, Options{}); err != nil {
+		t.Fatalf("zero-value config must work: %v", err)
+	}
+}

@@ -24,7 +24,7 @@ const maxBodyBytes = 1 << 20
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-type Handler struct {
+type handler struct {
 	incidents *incidents.Service
 	engine    *investigation.Engine
 	ready     func(context.Context) error
@@ -34,7 +34,7 @@ type Handler struct {
 // New returns the fully wired HTTP handler. ready reports whether
 // dependencies (the database) are reachable.
 func New(svc *incidents.Service, engine *investigation.Engine, ready func(context.Context) error, log *slog.Logger) http.Handler {
-	h := &Handler{incidents: svc, engine: engine, ready: ready, log: log}
+	h := &handler{incidents: svc, engine: engine, ready: ready, log: log}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/incidents", h.createIncident)
 	mux.HandleFunc("GET /api/v1/incidents", h.listIncidents)
@@ -48,7 +48,7 @@ func New(svc *incidents.Service, engine *investigation.Engine, ready func(contex
 	return recoverPanics(log, securityHeaders(withRequestIDs(observe(log, mux))))
 }
 
-func (h *Handler) createIncident(w http.ResponseWriter, r *http.Request) {
+func (h *handler) createIncident(w http.ResponseWriter, r *http.Request) {
 	var in incidents.CreateInput
 	if !decodeBody(w, r, &in, false) {
 		return
@@ -62,7 +62,7 @@ func (h *Handler) createIncident(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, inc)
 }
 
-func (h *Handler) listIncidents(w http.ResponseWriter, r *http.Request) {
+func (h *handler) listIncidents(w http.ResponseWriter, r *http.Request) {
 	limit, err1 := queryInt(r, "limit", 0)
 	offset, err2 := queryInt(r, "offset", 0)
 	if err := errors.Join(err1, err2); err != nil {
@@ -80,7 +80,7 @@ func (h *Handler) listIncidents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"incidents": list, "offset": offset})
 }
 
-func (h *Handler) getIncident(w http.ResponseWriter, r *http.Request) {
+func (h *handler) getIncident(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
 		return
@@ -93,7 +93,7 @@ func (h *Handler) getIncident(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, inc)
 }
 
-func (h *Handler) investigate(w http.ResponseWriter, r *http.Request) {
+func (h *handler) investigate(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
 		return
@@ -124,7 +124,7 @@ func (h *Handler) investigate(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) getReport(w http.ResponseWriter, r *http.Request) {
+func (h *handler) getReport(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
 		return
@@ -137,11 +137,11 @@ func (h *Handler) getReport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rec)
 }
 
-func (h *Handler) health(w http.ResponseWriter, _ *http.Request) {
+func (h *handler) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (h *Handler) readiness(w http.ResponseWriter, r *http.Request) {
+func (h *handler) readiness(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	if err := h.ready(ctx); err != nil {
@@ -154,7 +154,7 @@ func (h *Handler) readiness(w http.ResponseWriter, r *http.Request) {
 
 // fail maps service errors to HTTP responses. Unexpected errors are logged
 // and hidden from the client.
-func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
+func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var ve *incidents.ValidationError
 	switch {
 	case errors.As(err, &ve):
