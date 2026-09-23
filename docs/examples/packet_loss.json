@@ -1,0 +1,6 @@
+{
+  "title": "Warehouse WAW-01 has intermittent connectivity",
+  "description": "Handheld scanners in warehouse WAW-01 lose connection to the WMS every few minutes since 08:00. Wired terminals are also affected.",
+  "target_host": "gw.waw01.example.net",
+  "target_port": 443
+}

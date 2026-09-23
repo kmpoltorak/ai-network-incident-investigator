@@ -67,7 +67,7 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("SIMULATION_SCENARIO: %w", err)
 	}
-	provider := newProvider(cfg)
+	provider := llm.FromConfig(cfg)
 	engine := investigation.NewEngine(store, toolbox, provider, log, investigation.Config{
 		Timeout:       cfg.InvestigationTimeout,
 		MaxConcurrent: cfg.MaxConcurrentInvestigations,
@@ -108,17 +108,6 @@ func run(args []string) error {
 	}
 	log.Info("server stopped")
 	return nil
-}
-
-func newProvider(cfg config.Config) llm.Provider {
-	switch cfg.LLMProvider {
-	case "openai":
-		return llm.NewOpenAIProvider(cfg.OpenAIBaseURL, cfg.OpenAIAPIKey, cfg.LLMModel, cfg.LLMTimeout)
-	case "ollama":
-		return llm.NewOllamaProvider(cfg.OllamaBaseURL, cfg.LLMModel, cfg.LLMTimeout)
-	default:
-		return llm.RulesProvider{}
-	}
 }
 
 func migrateCommand(ctx context.Context, store *storage.Store, args []string, log *slog.Logger) error {

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/kmpoltorak/ai-network-incident-investigator/internal/config"
 	"github.com/kmpoltorak/ai-network-incident-investigator/internal/domain"
 )
 
@@ -24,6 +25,19 @@ type Provider interface {
 type AnalysisInput struct {
 	Incident domain.Incident
 	Evidence []domain.Evidence
+}
+
+// FromConfig builds the provider selected by LLM_PROVIDER. Config
+// validation guarantees the provider name and required credentials.
+func FromConfig(cfg config.Config) Provider {
+	switch cfg.LLMProvider {
+	case "openai":
+		return NewOpenAIProvider(cfg.OpenAIBaseURL, cfg.OpenAIAPIKey, cfg.LLMModel, cfg.LLMTimeout)
+	case "ollama":
+		return NewOllamaProvider(cfg.OllamaBaseURL, cfg.LLMModel, cfg.LLMTimeout)
+	default:
+		return RulesProvider{}
+	}
 }
 
 // ErrInvalidOutput marks responses that are not a well-formed analysis.

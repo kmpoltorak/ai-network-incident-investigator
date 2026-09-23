@@ -1,0 +1,6 @@
+{
+  "title": "Users cannot resolve internal application hostnames",
+  "description": "Since the resolver maintenance window, users report 'server not found' for app.corp.example.com. Access by IP address works.",
+  "target_host": "app.corp.example.com",
+  "target_port": 443
+}
