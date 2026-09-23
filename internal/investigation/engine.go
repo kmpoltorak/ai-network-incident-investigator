@@ -57,6 +57,7 @@ func NewEngine(store Store, toolbox Toolbox, provider llm.Provider, log *slog.Lo
 	if cfg.ToolTimeout <= 0 {
 		cfg.ToolTimeout = 10 * time.Second
 	}
+	initMetrics(provider.Name())
 	return &Engine{store: store, toolbox: toolbox, provider: provider, log: log, cfg: cfg,
 		slots: make(chan struct{}, max(cfg.MaxConcurrent, 1))}
 }
@@ -211,4 +212,25 @@ func (e *Engine) analyze(ctx context.Context, log *slog.Logger, inc domain.Incid
 	observability.LLMRequestsTotal.WithLabelValues(provider, "ok").Inc()
 	rec.Report = &domain.Report{ID: domain.NewID(), Provider: provider, Analysis: analysis, CreatedAt: time.Now().UTC()}
 	return nil
+}
+
+// initMetrics creates every known label combination at zero. Labeled
+// counters otherwise appear only on their first increment, and Prometheus
+// increase()/rate() cannot see that first event.
+func initMetrics(provider string) {
+	for _, s := range []domain.InvestigationStatus{domain.InvestigationCompleted, domain.InvestigationFailed} {
+		observability.InvestigationsTotal.WithLabelValues(string(s))
+	}
+	for _, tool := range []string{diagnostics.DNS, diagnostics.Ping, diagnostics.TCP} {
+		observability.ToolFailuresTotal.WithLabelValues(tool)
+		for _, h := range []domain.Health{domain.Healthy, domain.Degraded, domain.Down} {
+			observability.ToolExecutionsTotal.WithLabelValues(tool, string(h))
+		}
+	}
+	for _, status := range []string{"ok", "error"} {
+		observability.LLMRequestsTotal.WithLabelValues(provider, status)
+	}
+	for _, reason := range []string{"request", "invalid_output"} {
+		observability.LLMFailuresTotal.WithLabelValues(provider, reason)
+	}
 }
