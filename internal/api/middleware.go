@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"time"
 
@@ -42,6 +43,9 @@ func randomHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
+var knownMethods = []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+	http.MethodPatch, http.MethodDelete, http.MethodOptions}
+
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
@@ -65,12 +69,17 @@ func observe(log *slog.Logger, next http.Handler) http.Handler {
 		if route == "" {
 			route = "unmatched"
 		}
+		// Clients can send any method name; bound the label like the route.
+		method := r.Method
+		if !slices.Contains(knownMethods, method) {
+			method = "OTHER"
+		}
 		elapsed := time.Since(start)
-		observability.HTTPRequestsTotal.WithLabelValues(r.Method, route, strconv.Itoa(rec.status)).Inc()
-		observability.HTTPRequestDuration.WithLabelValues(r.Method, route).Observe(elapsed.Seconds())
+		observability.HTTPRequestsTotal.WithLabelValues(method, route, strconv.Itoa(rec.status)).Inc()
+		observability.HTTPRequestDuration.WithLabelValues(method, route).Observe(elapsed.Seconds())
 		// Probe and scrape endpoints are polled constantly; keep them out of the access log.
 		if route != "GET /metrics" && route != "GET /health" && route != "GET /ready" {
-			log.InfoContext(r.Context(), "http request", "method", r.Method, "route", route,
+			log.InfoContext(r.Context(), "http request", "method", method, "route", route,
 				"status", rec.status, "duration_ms", elapsed.Milliseconds())
 		}
 	})

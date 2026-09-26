@@ -61,7 +61,7 @@ func (p *OpenAIProvider) AnalyzeIncident(ctx context.Context, in AnalysisInput) 
 	c := resp.Choices[0]
 	switch {
 	case c.Message.Refusal != "":
-		return domain.Analysis{}, fmt.Errorf("openai: %w: model refused: %s", ErrInvalidOutput, truncate(c.Message.Refusal, 200))
+		return domain.Analysis{}, fmt.Errorf("openai: %w: model refused", ErrInvalidOutput)
 	case c.FinishReason == "length":
 		return domain.Analysis{}, fmt.Errorf("openai: %w: response truncated", ErrInvalidOutput)
 	}

@@ -136,6 +136,19 @@ func (s *Store) FinishInvestigation(ctx context.Context, rec domain.Investigatio
 	})
 }
 
+// FailStaleInvestigations marks investigations still "running" after olderThan
+// as failed. They were orphaned by a process that died before persisting its
+// result. olderThan must exceed the longest possible investigation so records
+// that another live replica is still working on are left alone.
+func (s *Store) FailStaleInvestigations(ctx context.Context, olderThan time.Duration) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE investigations
+		SET status = 'failed', error = 'interrupted: the server stopped before the investigation finished', completed_at = now()
+		WHERE status = 'running' AND started_at < now() - make_interval(secs => $1)`,
+		olderThan.Seconds())
+	return tag.RowsAffected(), err
+}
+
 // LatestReport returns the most recent completed investigation of an
 // incident with its executions, evidence and report.
 func (s *Store) LatestReport(ctx context.Context, incidentID string) (domain.InvestigationRecord, error) {

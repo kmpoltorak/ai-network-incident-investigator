@@ -62,6 +62,13 @@ func run(args []string) error {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	log.Info("database ready", "migrations_applied", n)
+	stale, err := store.FailStaleInvestigations(ctx, cfg.InvestigationTimeout+investigation.ShutdownGrace)
+	if err != nil {
+		return fmt.Errorf("fail stale investigations: %w", err)
+	}
+	if stale > 0 {
+		log.Warn("marked orphaned investigations as failed", "count", stale)
+	}
 
 	toolbox, err := diagnostics.NewToolbox(cfg.SimulationEnabled, cfg.SimulationScenario)
 	if err != nil {
@@ -85,6 +92,9 @@ func run(args []string) error {
 		MaxHeaderBytes: 64 << 10,
 		ErrorLog:       slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
+	// Shutdown interrupts running investigations instead of waiting up to
+	// INVESTIGATION_TIMEOUT; they persist as failed within ShutdownGrace.
+	srv.RegisterOnShutdown(engine.Shutdown)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -98,7 +108,7 @@ func run(args []string) error {
 	case <-ctx.Done():
 	}
 	log.Info("shutting down")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), investigation.ShutdownGrace)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)

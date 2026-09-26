@@ -2,9 +2,11 @@ package investigation
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -75,6 +77,17 @@ func (f *fakeProvider) AnalyzeIncident(ctx context.Context, _ llm.AnalysisInput)
 		}
 	}
 	return f.analysis, f.err
+}
+
+// enteringProvider signals when analysis starts.
+type enteringProvider struct {
+	*fakeProvider
+	entered chan struct{}
+}
+
+func (p enteringProvider) AnalyzeIncident(ctx context.Context, in llm.AnalysisInput) (domain.Analysis, error) {
+	close(p.entered)
+	return p.fakeProvider.AnalyzeIncident(ctx, in)
 }
 
 type failingTool struct{ name string }
@@ -193,9 +206,31 @@ func TestToolFailureIsRecordedAndInvestigationContinues(t *testing.T) {
 func TestAllToolsFailSkipsLLM(t *testing.T) {
 	tb := staticToolbox{"dns": failingTool{"dns"}, "ping": failingTool{"ping"}, "tcp": failingTool{"tcp"}}
 	p := &fakeProvider{}
-	_, err := newEngine(newMemStore(incident), tb, p).Investigate(context.Background(), incident.ID, Options{})
+	rec, err := newEngine(newMemStore(incident), tb, p).Investigate(context.Background(), incident.ID, Options{})
 	if !errors.Is(err, ErrAnalysisFailed) || p.calls != 0 {
 		t.Fatalf("err=%v calls=%d", err, p.calls)
+	}
+	// The UI maps over evidence; it must serialize as [] rather than null.
+	if b, _ := json.Marshal(rec); !strings.Contains(string(b), `"evidence":[]`) {
+		t.Fatalf("record = %s", b)
+	}
+}
+
+func TestShutdownInterruptsAndPersists(t *testing.T) {
+	store := newMemStore(incident)
+	p := enteringProvider{&fakeProvider{block: make(chan struct{})}, make(chan struct{})}
+	e := newEngine(store, simToolbox(t), p)
+	go func() {
+		<-p.entered // diagnostics done, analysis in progress
+		e.Shutdown()
+	}()
+	rec, err := e.Investigate(context.Background(), incident.ID, Options{})
+	if !errors.Is(err, ErrAnalysisFailed) || !strings.Contains(rec.Investigation.Error, "server shutdown") {
+		t.Fatalf("err = %v", err)
+	}
+	got := store.finished[0]
+	if got.Investigation.Status != domain.InvestigationFailed || len(got.Evidence) == 0 || store.finishErr != nil {
+		t.Fatalf("interrupted investigation not persisted with its evidence: %+v", got.Investigation)
 	}
 }
 

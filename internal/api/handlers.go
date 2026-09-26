@@ -185,8 +185,14 @@ func decodeBody(w http.ResponseWriter, r *http.Request, dst any, optional bool) 
 	if optional && errors.Is(err, io.EOF) {
 		return true
 	}
-	if err == nil && dec.More() {
-		err = errors.New("unexpected data after JSON object")
+	if err == nil {
+		// Anything but EOF after the object is trailing data. A size-limit
+		// error from this read is kept so it still maps to 413.
+		if err = dec.Decode(new(json.RawMessage)); errors.Is(err, io.EOF) {
+			err = nil
+		} else if err == nil {
+			err = errors.New("unexpected data after JSON object")
+		}
 	}
 	if err != nil {
 		var tooLarge *http.MaxBytesError

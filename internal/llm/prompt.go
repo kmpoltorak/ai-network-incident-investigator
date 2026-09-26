@@ -36,6 +36,16 @@ var analysisSchema = json.RawMessage(`{
   }
 }`)
 
+// requiredFields are the top-level fields the schema requires; the decoder
+// enforces them because not every provider honors the schema.
+var requiredFields = func() []string {
+	var s struct {
+		Required []string `json:"required"`
+	}
+	_ = json.Unmarshal(analysisSchema, &s) // constant, covered by tests
+	return s.Required
+}()
+
 type promptIncident struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
@@ -54,8 +64,9 @@ type promptEvidence struct {
 // for analysis are included; database IDs and timestamps are omitted.
 func userPrompt(in AnalysisInput) (string, error) {
 	msg := struct {
-		Incident promptIncident   `json:"incident"`
-		Evidence []promptEvidence `json:"evidence"`
+		Incident          promptIncident   `json:"incident"`
+		Evidence          []promptEvidence `json:"evidence"`
+		FailedDiagnostics []string         `json:"failed_diagnostics,omitempty"`
 	}{
 		Incident: promptIncident{
 			Title:       in.Incident.Title,
@@ -63,6 +74,7 @@ func userPrompt(in AnalysisInput) (string, error) {
 			TargetHost:  in.Incident.TargetHost,
 			TargetPort:  in.Incident.TargetPort,
 		},
+		FailedDiagnostics: in.FailedTools,
 	}
 	for _, e := range in.Evidence {
 		msg.Evidence = append(msg.Evidence, promptEvidence{Source: e.Source, Health: e.Health, Summary: e.Summary, Data: e.Data})

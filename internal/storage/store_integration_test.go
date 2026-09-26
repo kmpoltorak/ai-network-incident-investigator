@@ -102,7 +102,7 @@ func TestFinishInvestigationAndLatestReport(t *testing.T) {
 	ev := domain.Evidence{ID: domain.NewID(), ToolExecutionID: te.ID, Source: "ping", Health: domain.Degraded,
 		Summary: "18% loss", Data: te.Output}
 	analysis := domain.Analysis{Summary: "s", RootCause: "loss", Confidence: 0.87, Severity: domain.SeverityHigh,
-		Evidence: []domain.EvidenceReference{{Source: "ping", Description: "18%"}}, RecommendedActions: []string{"a"}}
+		Evidence: []domain.EvidenceReference{{Source: "ping", Description: "18%"}}, PossibleCauses: []string{"c"}, RecommendedActions: []string{"a"}}
 
 	inv.Status = domain.InvestigationCompleted
 	inv.CompletedAt = &now
@@ -129,5 +129,36 @@ func TestFinishInvestigationAndLatestReport(t *testing.T) {
 	updated, _ := s.GetIncident(ctx, inc.ID)
 	if updated.Status != domain.IncidentAnalyzed {
 		t.Fatalf("incident status = %s, want analyzed", updated.Status)
+	}
+}
+
+func TestFailStaleInvestigations(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	inc := domain.Incident{Title: "t", TargetHost: "example.com"}
+	if err := s.CreateIncident(ctx, &inc); err != nil {
+		t.Fatal(err)
+	}
+	orphan := domain.Investigation{IncidentID: inc.ID, Status: domain.InvestigationRunning}
+	live := orphan
+	for _, inv := range []*domain.Investigation{&orphan, &live} {
+		if err := s.CreateInvestigation(ctx, inv); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE investigations SET started_at = now() - interval '1 hour' WHERE id = $1`, orphan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.FailStaleInvestigations(ctx, 10*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]domain.InvestigationStatus{orphan.ID: domain.InvestigationFailed, live.ID: domain.InvestigationRunning} {
+		var got domain.InvestigationStatus
+		if err := s.pool.QueryRow(ctx, `SELECT status FROM investigations WHERE id = $1`, id).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("investigation %s: status %s, want %s", id, got, want)
+		}
 	}
 }

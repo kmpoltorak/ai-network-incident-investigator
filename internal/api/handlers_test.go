@@ -180,6 +180,8 @@ func TestErrorResponses(t *testing.T) {
 		{"injection host", "POST", "/api/v1/incidents", `{"title":"t","target_host":"a.com;id"}`, 400, "validation_failed"},
 		{"unknown field", "POST", "/api/v1/incidents", `{"title":"t","target_host":"a.com","admin":true}`, 400, "invalid_json"},
 		{"malformed json", "POST", "/api/v1/incidents", `{"title":`, 400, "invalid_json"},
+		{"trailing bracket", "POST", "/api/v1/incidents", `{"title":"t","target_host":"a.com"}]`, 400, "invalid_json"},
+		{"second object", "POST", "/api/v1/incidents", `{"title":"t","target_host":"a.com"} {}`, 400, "invalid_json"},
 		{"empty create body", "POST", "/api/v1/incidents", ``, 400, "invalid_json"},
 		{"bad limit", "GET", "/api/v1/incidents?limit=ten", "", 400, "validation_failed"},
 		{"negative offset", "GET", "/api/v1/incidents?offset=-1", "", 400, "validation_failed"},
@@ -242,6 +244,7 @@ func TestHealthReadyMetrics(t *testing.T) {
 	}
 
 	do(t, "GET", srv.URL+"/api/v1/incidents/"+domain.NewID(), "")
+	do(t, "MADEUPMETHOD", srv.URL+"/health", "")
 	resp, err := http.Get(srv.URL + "/metrics")
 	if err != nil {
 		t.Fatal(err)
@@ -255,6 +258,9 @@ func TestHealthReadyMetrics(t *testing.T) {
 	}
 	if strings.Contains(string(body), "/api/v1/incidents/"+"0") {
 		t.Error("raw path leaked into metric labels")
+	}
+	if strings.Contains(string(body), "MADEUPMETHOD") || !strings.Contains(string(body), `method="OTHER"`) {
+		t.Error("unknown HTTP methods must share the OTHER label")
 	}
 }
 

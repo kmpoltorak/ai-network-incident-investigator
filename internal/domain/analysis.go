@@ -62,6 +62,10 @@ func (a Analysis) Validate(collectedSources []string) error {
 			errs = append(errs, fmt.Errorf("evidence from %q has empty description", e.Source))
 		}
 	}
+	// An empty list is a valid "no hypotheses"; nil means the field is missing.
+	if a.PossibleCauses == nil {
+		errs = append(errs, errors.New("possible_causes is missing"))
+	}
 	if !slices.ContainsFunc(a.RecommendedActions, func(s string) bool { return strings.TrimSpace(s) != "" }) {
 		errs = append(errs, errors.New("recommended_actions is empty"))
 	}

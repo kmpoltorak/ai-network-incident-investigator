@@ -52,9 +52,9 @@ Investigation workflow:
 2. Load the incident and create an investigation record (`running`).
 3. Build a deterministic plan: `dns` (hostnames only), then `ping`, then `tcp` (only when a port is set).
 4. Run each tool with its own timeout. A tool that cannot run is recorded as a failed execution and the investigation continues.
-5. Normalize results into evidence (`healthy`, `degraded`, `down`) and send them to the provider.
+5. Normalize results into evidence (`healthy`, `degraded`, `down`) and send them to the provider, together with the names of diagnostics that failed to run, so a missing check is never read as a healthy one.
 6. Validate the analysis. Invalid or hallucinated output is rejected and never stored as a report.
-7. Persist executions, evidence and the report in **one transaction**, with a context detached from the request so an investigation can never be left `running`.
+7. Persist executions, evidence and the report in **one transaction**, with a context detached from the request so an investigation can never be left `running`. On `SIGTERM` in-flight investigations are interrupted and stored as `failed` with the evidence gathered so far (within 15 s). At startup, investigations still `running` longer than `INVESTIGATION_TIMEOUT` + 15 s (orphaned by a crash) are marked `failed`; the margin keeps other live replicas' work untouched.
 
 The engine does not know whether the tools it receives are real or simulated.
 
@@ -233,13 +233,13 @@ With `SIMULATION_ENABLED=false`, the tools probe the real target: the OS `ping` 
 
 | Provider | How it works |
 |----------|--------------|
-| `rules` | Deterministic analyzer that triages in the order an engineer would: resolution, then reachability, then ICMP filtering, then service port, then packet loss, then latency. No network access; the default. |
+| `rules` | Deterministic analyzer that triages in the order an engineer would: resolution, then reachability, then ICMP filtering, then service port, then packet loss, then latency. It concludes only from checks that ran: "host unreachable" needs both ping and TCP down, slow but working TCP counts as reachable, and failed diagnostics lower confidence instead of looking healthy. No network access; the default. |
 | `openai` | Chat Completions with `response_format: json_schema` (strict) and temperature 0 |
 | `ollama` | `/api/chat` with the same JSON schema in `format`, `stream: false` and temperature 0 |
 
 The system prompt ([`internal/llm/system_prompt.txt`](internal/llm/system_prompt.txt)) requires the model to use only the supplied evidence, separate observations (`evidence`) from hypotheses (`possible_causes`), lower its confidence and admit uncertainty when evidence is weak, and return a single JSON object.
 
-Every response is decoded strictly (unknown fields and trailing data are rejected) and validated. An analysis citing a source that was not collected (for example `bgp`) is rejected, so hallucinated diagnostics never reach the database.
+Every response is decoded strictly (unknown fields, trailing data and missing or `null` required fields are rejected) and validated. An analysis citing a source that was not collected (for example `bgp`) is rejected, so hallucinated diagnostics never reach the database.
 
 ## Testing
 
@@ -249,8 +249,8 @@ make test-integration   # starts a disposable PostgreSQL container, runs integra
 make lint               # gofmt, go vet, golangci-lint
 ```
 
-- **Unit tests** cover config parsing, host validation, ping output parsing (Linux, BusyBox, macOS), DNS and TCP tools, simulation scenarios, analysis validation, strict decoding, the OpenAI and Ollama clients against `httptest` servers, the rules provider, the engine with an in-memory store (tool failures, invalid output, cancellation, concurrency limit) and the HTTP handlers.
-- **Integration tests** (`-tags integration`) cover migrations up and down, repository round-trips and the full API over real PostgreSQL using the sample incidents.
+- **Unit tests** cover config parsing, host validation, ping output parsing (Linux, BusyBox, macOS), DNS and TCP tools, simulation scenarios, analysis validation, strict decoding, the OpenAI and Ollama clients against `httptest` servers, the rules provider, the engine with an in-memory store (tool failures, invalid output, cancellation, shutdown, concurrency limit) and the HTTP handlers.
+- **Integration tests** (`-tags integration`) cover migrations up and down, repository round-trips, orphaned-investigation cleanup and the full API over real PostgreSQL using the sample incidents.
 - **Deterministic AI evaluation** runs every scenario through the engine with the rules provider and requires the expected root-cause category.
 - **Live AI evaluation** (`-tags eval`, opt-in) runs the same cases against a real model:
 
@@ -263,7 +263,7 @@ make lint               # gofmt, go vet, golangci-lint
 ## Observability
 
 - **Logs:** JSON (`log/slog`) with `request_id`, `trace_id`, `incident_id`, `investigation_id`, `tool_name`, `duration_ms` and `status`. Secrets are never logged, and the config is printed redacted.
-- **Metrics:** `http_requests_total`, `http_request_duration_seconds` (labeled by route pattern, never the raw path), `incidents_total`, `investigations_total`, `investigation_duration_seconds`, `diagnostic_tool_executions_total` (by tool and observed health), `diagnostic_tool_failures_total`, `llm_requests_total`, `llm_request_duration_seconds` and `llm_failures_total` (by reason: `request` or `invalid_output`).
+- **Metrics:** `http_requests_total`, `http_request_duration_seconds` (labeled by route pattern, never the raw path, and by method, with non-standard methods grouped as `OTHER`), `incidents_total`, `investigations_total`, `investigation_duration_seconds`, `diagnostic_tool_executions_total` (by tool and observed health), `diagnostic_tool_failures_total`, `llm_requests_total`, `llm_request_duration_seconds` and `llm_failures_total` (by reason: `request` or `invalid_output`).
 - **Dashboard:** [`deployments/grafana/`](deployments/grafana/) is provisioned automatically by the `monitoring` Compose profile.
 
 ![Grafana dashboard](docs/images/grafana-dashboard.png)
@@ -271,7 +271,7 @@ make lint               # gofmt, go vet, golangci-lint
 ## Docker
 
 - Multi-stage build: `node:22-alpine` builds the UI, `golang:1.27-alpine` builds a static binary, and `alpine:3.22` is the runtime with `iputils-ping` and CA certificates.
-- About **35 MB**, runs as **UID 10001**, has a `HEALTHCHECK` on `/health`, and the binary is PID 1 and handles `SIGTERM` for graceful shutdown.
+- About **35 MB**, runs as **UID 10001**, has a `HEALTHCHECK` on `/health`, and the binary is PID 1 and handles `SIGTERM` for graceful shutdown. Compose gives it `stop_grace_period: 30s` and Kubernetes `terminationGracePeriodSeconds: 30`, above the 15 s the app needs.
 - In Compose, the app container is `read_only`, with `cap_drop: [ALL]` and `no-new-privileges`. ICMP works without root through unprivileged ping sockets.
 
 | Profile | Services |
@@ -306,6 +306,7 @@ These manifests were checked on a local minikube cluster (v1.34).
 - **Input validation at every boundary:** strict JSON (unknown fields rejected, 1 MiB limit), RFC 1123 hostname or IP validation applied by the API and again by every tool, UUID path IDs, and length limits.
 - **No shell:** `ping` runs through `exec.CommandContext` with fixed argv and `--` before the host.
 - **Output validation:** schema-constrained generation, strict decoding, domain validation and an evidence-source cross-check. Invalid output is never persisted.
+- **Provider errors:** only the HTTP status and the provider request ID are kept; response bodies and refusal texts are never logged, stored or returned to clients.
 - **Timeouts everywhere:** per tool, per LLM request, per investigation, database statement timeout, and HTTP read/write/idle timeouts.
 - **Resource limits:** bounded concurrent investigations (429 with `Retry-After`) and pagination caps. Per-client rate limiting belongs at the ingress.
 - **Secrets:** read only from the environment and redacted in logs. `.env` is git-ignored, and CI runs `govulncheck` and `npm audit`.

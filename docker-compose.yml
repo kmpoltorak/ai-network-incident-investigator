@@ -50,6 +50,8 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+    # The app needs up to 15s to persist interrupted investigations (default is 10s).
+    stop_grace_period: 30s
 
   ollama:
     profiles: [ollama]

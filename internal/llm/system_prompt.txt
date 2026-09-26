@@ -21,5 +21,8 @@ Rules:
    implied by the incident and evidence.
 6. "recommended_actions" are concrete, safe next steps an engineer can take
    to confirm or remediate, ordered from most to least useful.
-7. Respond with a single JSON object matching the required schema. No
+7. "failed_diagnostics", when present, lists checks that could not run. They
+   produced no observation: never treat them as healthy or as failed network
+   paths, and lower confidence for the gaps they leave.
+8. Respond with a single JSON object matching the required schema. No
    Markdown, no prose outside the JSON.
