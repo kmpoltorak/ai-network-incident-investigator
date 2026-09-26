@@ -16,7 +16,7 @@ const healthStyle: Record<Health | "failed", string> = {
 
 export default function Report({ record }: { record: InvestigationRecord }) {
   const a = record.report?.analysis;
-  const evidenceByExec = new Map(record.evidence.map((e) => [e.tool_execution_id, e]));
+  const evidenceByExec = new Map((record.evidence ?? []).map((e) => [e.tool_execution_id, e]));
   const pct = a ? Math.round(a.confidence * 100) : 0;
 
   return (
@@ -50,7 +50,7 @@ export default function Report({ record }: { record: InvestigationRecord }) {
             <div className="card">
               <h4 className="section-title">Recommended actions</h4>
               <ol className="flex list-decimal flex-col gap-1.5 pl-5 text-sm">
-                {a.recommended_actions.map((t) => (
+                {(a.recommended_actions ?? []).map((t) => (
                   <li key={t}>{t}</li>
                 ))}
               </ol>
@@ -58,13 +58,13 @@ export default function Report({ record }: { record: InvestigationRecord }) {
             <div className="card">
               <h4 className="section-title">Possible causes</h4>
               <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm">
-                {a.possible_causes.map((t) => (
+                {(a.possible_causes ?? []).map((t) => (
                   <li key={t}>{t}</li>
                 ))}
               </ul>
               <h4 className="section-title mt-5">Cited evidence</h4>
               <ul className="flex flex-col gap-1.5 text-sm">
-                {a.evidence.map((e, i) => (
+                {(a.evidence ?? []).map((e, i) => (
                   <li key={i}>
                     <span className="mr-2 font-mono text-xs text-zinc-500">{e.source}</span>
                     {e.description}
@@ -89,7 +89,7 @@ export default function Report({ record }: { record: InvestigationRecord }) {
               </tr>
             </thead>
             <tbody>
-              {record.tool_executions.map((te) => {
+              {(record.tool_executions ?? []).map((te) => {
                 const ev = evidenceByExec.get(te.id);
                 const health = ev?.health ?? "failed";
                 return (

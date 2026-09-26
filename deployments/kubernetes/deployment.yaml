@@ -18,7 +18,8 @@ spec:
         prometheus.io/port: "8080"
         prometheus.io/path: /metrics
     spec:
-      # Investigations are synchronous; allow in-flight ones to finish.
+      # On SIGTERM in-flight investigations are interrupted and persisted as
+      # failed within 15s; keep this above that.
       terminationGracePeriodSeconds: 30
       automountServiceAccountToken: false
       securityContext:

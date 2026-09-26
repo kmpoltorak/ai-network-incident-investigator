@@ -27,6 +27,12 @@ func TestDecodeAnalysis(t *testing.T) {
 		{"bare fence", "```\n" + validJSON + "\n```", false},
 		{"unknown field", `{"summary":"s","hacked":true}`, true},
 		{"trailing object", validJSON + `{"x":1}`, true},
+		{"trailing bracket", validJSON + `]`, true},
+		{"trailing brace", validJSON + `}`, true},
+		{"trailing whitespace", validJSON + "\n\t ", false},
+		{"missing confidence", strings.Replace(validJSON, `"confidence":0.7,`, "", 1), true},
+		{"null possible causes", strings.Replace(validJSON, `["c"]`, "null", 1), true},
+		{"missing possible causes", strings.Replace(validJSON, `"possible_causes":["c"],`, "", 1), true},
 		{"prose", "The root cause is DNS.", true},
 		{"empty", "", true},
 	}
@@ -130,6 +136,26 @@ func TestOpenAIProviderErrors(t *testing.T) {
 	}
 }
 
+func TestProviderErrorBodyNotLeaked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Request-Id", "req_123")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"bad key FAKE-SECRET"}`))
+	}))
+	defer srv.Close()
+	_, err := NewOpenAIProvider(srv.URL, "k", "m", time.Second).AnalyzeIncident(context.Background(), sampleInput())
+	if err == nil || strings.Contains(err.Error(), "FAKE-SECRET") || !strings.Contains(err.Error(), "401") ||
+		!strings.Contains(err.Error(), "req_123") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRequiredFieldsMatchSchema(t *testing.T) {
+	if len(requiredFields) != 7 {
+		t.Fatalf("requiredFields = %v", requiredFields)
+	}
+}
+
 func TestProviderTimeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
@@ -201,10 +227,21 @@ func TestRulesProvider(t *testing.T) {
 			"High network latency", domain.SeverityMedium},
 		{"healthy", []domain.Evidence{ev("dns", domain.Healthy, ""), ev("ping", domain.Healthy, "")},
 			"No network-layer fault detected", domain.SeverityLow},
+		// Slow but working TCP proves the host is reachable.
+		{"icmp filtered, slow tcp", []domain.Evidence{ev("ping", domain.Down, `{"packet_loss_percent":100}`), ev("tcp", domain.Degraded, "")},
+			"ICMP filtered; no connectivity fault detected", domain.SeverityLow},
+		// No TCP evidence must not be read as "TCP down".
+		{"ping down, no tcp", []domain.Evidence{ev("ping", domain.Down, `{"packet_loss_percent":100}`)},
+			"Host possibly unreachable (ICMP only)", domain.SeverityHigh},
+		{"partial evidence", []domain.Evidence{ev("dns", domain.Healthy, "")},
+			"No fault in the collected evidence; diagnostics incomplete", domain.SeverityLow},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			in := AnalysisInput{Incident: domain.Incident{TargetHost: "h", TargetPort: 5432}, Evidence: tt.evidence}
+			if tt.name == "partial evidence" {
+				in.FailedTools = []string{"ping", "tcp"}
+			}
 			a, err := RulesProvider{}.AnalyzeIncident(context.Background(), in)
 			if err != nil {
 				t.Fatal(err)

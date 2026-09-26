@@ -51,6 +51,8 @@ type Engine struct {
 	log      *slog.Logger
 	cfg      Config
 	slots    chan struct{}
+	stopping context.Context
+	stop     context.CancelFunc
 }
 
 func NewEngine(store Store, toolbox Toolbox, provider llm.Provider, log *slog.Logger, cfg Config) *Engine {
@@ -61,9 +63,21 @@ func NewEngine(store Store, toolbox Toolbox, provider llm.Provider, log *slog.Lo
 		cfg.ToolTimeout = 10 * time.Second
 	}
 	initMetrics(provider.Name())
+	stopping, stop := context.WithCancel(context.Background())
 	return &Engine{store: store, toolbox: toolbox, provider: provider, log: log, cfg: cfg,
-		slots: make(chan struct{}, max(cfg.MaxConcurrent, 1))}
+		slots: make(chan struct{}, max(cfg.MaxConcurrent, 1)), stopping: stopping, stop: stop}
 }
+
+// Shutdown interrupts in-flight investigations. Each one stops its
+// diagnostics and analysis and persists as failed with the evidence gathered
+// so far, so the process can exit without leaving records "running".
+func (e *Engine) Shutdown() { e.stop() }
+
+// ShutdownGrace is how long in-flight investigations need after Shutdown to
+// persist their final state.
+const ShutdownGrace = saveTimeout + 5*time.Second
+
+const saveTimeout = 10 * time.Second
 
 type Options struct {
 	// Scenario selects a simulation scenario; empty uses the default.
@@ -91,10 +105,14 @@ func (e *Engine) Investigate(ctx context.Context, incidentID string, opts Option
 
 	ctx, cancel := context.WithTimeout(ctx, e.cfg.Timeout)
 	defer cancel()
+	defer context.AfterFunc(e.stopping, cancel)()
 	start := time.Now()
 
+	// Collections start empty, not nil, so the API always returns arrays.
 	rec := domain.InvestigationRecord{
-		Investigation: domain.Investigation{IncidentID: inc.ID, Status: domain.InvestigationRunning, Scenario: scenario},
+		Investigation:  domain.Investigation{IncidentID: inc.ID, Status: domain.InvestigationRunning, Scenario: scenario},
+		ToolExecutions: []domain.ToolExecution{},
+		Evidence:       []domain.Evidence{},
 	}
 	if err := e.store.CreateInvestigation(ctx, &rec.Investigation); err != nil {
 		return domain.InvestigationRecord{}, fmt.Errorf("create investigation: %w", err)
@@ -116,6 +134,9 @@ func (e *Engine) Investigate(ctx context.Context, incidentID string, opts Option
 	}
 
 	analysisErr := e.analyze(ctx, log, inc, &rec)
+	if analysisErr != nil && e.stopping.Err() != nil {
+		analysisErr = fmt.Errorf("interrupted by server shutdown: %w", analysisErr)
+	}
 
 	now := time.Now().UTC()
 	rec.Investigation.CompletedAt = &now
@@ -125,9 +146,9 @@ func (e *Engine) Investigate(ctx context.Context, incidentID string, opts Option
 		rec.Investigation.Error = analysisErr.Error()
 	}
 
-	// Persist even if the caller went away or the deadline passed, so an
-	// investigation never stays "running".
-	saveCtx, saveCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	// Persist even if the caller went away, the deadline passed or the
+	// server is stopping, so an investigation never stays "running".
+	saveCtx, saveCancel := context.WithTimeout(context.WithoutCancel(ctx), saveTimeout)
 	defer saveCancel()
 	if err := e.store.FinishInvestigation(saveCtx, rec); err != nil {
 		log.ErrorContext(ctx, "persist investigation", "error", err)
@@ -192,9 +213,15 @@ func (e *Engine) analyze(ctx context.Context, log *slog.Logger, inc domain.Incid
 	if len(rec.Evidence) == 0 {
 		return errors.New("no diagnostic evidence collected; every tool failed")
 	}
+	var failed []string
+	for _, te := range rec.ToolExecutions {
+		if te.Status == domain.ToolFailed {
+			failed = append(failed, te.ToolName)
+		}
+	}
 	provider := e.provider.Name()
 	start := time.Now()
-	analysis, err := e.provider.AnalyzeIncident(ctx, llm.AnalysisInput{Incident: inc, Evidence: rec.Evidence})
+	analysis, err := e.provider.AnalyzeIncident(ctx, llm.AnalysisInput{Incident: inc, Evidence: rec.Evidence, FailedTools: failed})
 	observability.LLMRequestDuration.WithLabelValues(provider).Observe(time.Since(start).Seconds())
 	if err == nil {
 		sources := make([]string, len(rec.Evidence))

@@ -12,6 +12,7 @@ func validAnalysis() Analysis {
 		Confidence:         0.8,
 		Severity:           SeverityHigh,
 		Evidence:           []EvidenceReference{{Source: "ping", Description: "18% loss"}},
+		PossibleCauses:     []string{"optics degradation"},
 		RecommendedActions: []string{"check interface counters"},
 	}
 }
@@ -32,6 +33,8 @@ func TestAnalysisValidate(t *testing.T) {
 		{"uncollected source", func(a *Analysis) { a.Evidence[0].Source = "bgp" }, `"bgp" was not collected`},
 		{"blank evidence description", func(a *Analysis) { a.Evidence[0].Description = "" }, "empty description"},
 		{"no actions", func(a *Analysis) { a.RecommendedActions = []string{""} }, "recommended_actions"},
+		{"missing possible causes", func(a *Analysis) { a.PossibleCauses = nil }, "possible_causes is missing"},
+		{"empty possible causes", func(a *Analysis) { a.PossibleCauses = []string{} }, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

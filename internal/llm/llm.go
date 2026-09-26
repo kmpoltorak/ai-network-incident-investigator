@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/kmpoltorak/ai-network-incident-investigator/internal/config"
@@ -25,6 +26,9 @@ type Provider interface {
 type AnalysisInput struct {
 	Incident domain.Incident
 	Evidence []domain.Evidence
+	// FailedTools names planned diagnostics that could not run. Their
+	// absence from Evidence is not a healthy result.
+	FailedTools []string
 }
 
 // FromConfig builds the provider selected by LLM_PROVIDER. Config
@@ -58,14 +62,24 @@ func decodeAnalysis(content string) (domain.Analysis, error) {
 	if err := dec.Decode(&a); err != nil {
 		return domain.Analysis{}, fmt.Errorf("%w: %w", ErrInvalidOutput, err)
 	}
-	if dec.More() {
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
 		return domain.Analysis{}, fmt.Errorf("%w: trailing data after JSON object", ErrInvalidOutput)
+	}
+	// A missing field would silently decode to its zero value (confidence 0,
+	// possible_causes null), so require every schema field explicitly.
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal([]byte(s), &fields) // already decoded successfully above
+	for _, k := range requiredFields {
+		if v, ok := fields[k]; !ok || string(v) == "null" {
+			return domain.Analysis{}, fmt.Errorf("%w: field %q is missing or null", ErrInvalidOutput, k)
+		}
 	}
 	return a, nil
 }
 
 // postJSON sends body to url and decodes a 2xx JSON response into out.
-// Error bodies are truncated so a misbehaving endpoint cannot flood logs.
+// Error bodies are never included in the error: it is logged, stored and
+// returned to API clients, and the body may echo prompts or credentials.
 func postJSON(ctx context.Context, client *http.Client, url string, headers map[string]string, body, out any) error {
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -89,7 +103,10 @@ func postJSON(ctx context.Context, client *http.Client, url string, headers map[
 		return fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, truncate(string(data), 300))
+		if id := resp.Header.Get("X-Request-Id"); safeRequestID.MatchString(id) {
+			return fmt.Errorf("unexpected status %d (provider request id %s)", resp.StatusCode, id)
+		}
+		return fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}
 	if err := json.Unmarshal(data, out); err != nil {
 		return fmt.Errorf("%w: decode response envelope: %w", ErrInvalidOutput, err)
@@ -97,9 +114,4 @@ func postJSON(ctx context.Context, client *http.Client, url string, headers map[
 	return nil
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
-}
+var safeRequestID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
