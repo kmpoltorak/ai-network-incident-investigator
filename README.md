@@ -338,6 +338,10 @@ deployments/
 docs/                    sample incidents and screenshots
 ```
 
+## Contributing
+
+Workflow, testing and documentation rules for contributors and AI coding agents are in [AGENTS.md](AGENTS.md). `CLAUDE.md` imports it for Claude Code.
+
 ## Roadmap
 
 - Traceroute and MTR diagnostics, and interface counters through device adapters (SNMP, gNMI)
