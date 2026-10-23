@@ -2,287 +2,129 @@
 
 [![CI](https://github.com/kmpoltorak/ai-network-incident-investigator/actions/workflows/ci.yml/badge.svg)](https://github.com/kmpoltorak/ai-network-incident-investigator/actions/workflows/ci.yml)
 
-An AI-assisted network incident investigation service written in Go. You report an incident such as "Warehouse WAW-01 has intermittent connectivity". The service then runs a fixed, safe set of diagnostics (DNS, ping, TCP) against the affected target, stores every result as evidence, and asks an LLM to correlate that evidence into a **validated, structured report**: root cause, confidence, severity, cited evidence, possible causes and recommended actions.
+A Go service for first-line triage of network incidents. You report an
+incident such as "Warehouse WAW-01 has intermittent connectivity"; it runs a
+fixed set of diagnostics (DNS, ping, TCP) against the target, stores every
+result as evidence, and has an LLM or a built-in rules engine turn that evidence
+into a validated report: root cause, confidence, severity, possible causes and
+actions. It runs fully offline with simulated diagnostics and the rules engine.
 
-![Web UI](docs/images/web-ui.png)
-
-## Overview
-
-First-line triage of network incidents is repetitive: ping the gateway, resolve the name, test the port, then reason about the combination. This project automates that loop and keeps a strict boundary around the AI:
-
-- **The application owns the workflow.** It decides which diagnostics run, with which arguments, in which order.
-- **The LLM only analyzes.** It receives structured evidence and returns JSON that must pass schema and evidence validation before it is stored. It cannot run tools, commands, or anything else.
-- **Everything is auditable.** Every tool execution, piece of evidence and report is persisted in PostgreSQL.
-
-It runs fully offline: **simulation mode** produces realistic, deterministic diagnostics, and a **rules provider** analyzes them without any external model. Switch to OpenAI or a local Ollama model with one environment variable.
-
-## Features
-
-- REST API for incidents, investigations and reports, plus a **React web UI** served by the same binary
-- Diagnostics: **ping** (ICMP, unprivileged), **DNS** lookup, **TCP** connect check, with a hard-coded tool allowlist
-- **Simulation mode** with five deterministic scenarios: `healthy`, `packet_loss`, `dns_failure`, `tcp_failure`, `high_latency`
-- LLM providers: **OpenAI** (strict JSON schema), **Ollama** (schema-constrained output), deterministic **rules**
-- Structured output validation: required fields, confidence range, severity enum, and **every cited evidence source must have actually been collected**
-- PostgreSQL persistence with embedded, advisory-locked migrations
-- Observability: JSON logs with request and trace IDs, Prometheus metrics, and a provisioned **Grafana dashboard**
-- Production-style packaging: 35 MB non-root image, Docker Compose with optional profiles, hardened Kubernetes manifests, GitHub Actions CI
-
-## Architecture
-
-```mermaid
-flowchart LR
-    User([User / Web UI]) -->|HTTP JSON| API[REST API<br/>internal/api]
-    API --> IS[Incident Service<br/>internal/incidents]
-    API --> IE[Investigation Engine<br/>internal/investigation]
-    IE --> TB[Toolbox<br/>internal/diagnostics]
-    TB --> Real[Real tools<br/>ping · dns · tcp]
-    TB --> Sim[Simulated tools<br/>5 scenarios]
-    IE -->|structured evidence| LLM[LLM Analyzer<br/>internal/llm]
-    LLM --> OpenAI
-    LLM --> Ollama
-    LLM --> Rules[Rules provider]
-    IE -->|validated report| DB[(PostgreSQL<br/>internal/storage)]
-    IS --> DB
-    API -.->|/metrics| Prom[Prometheus] -.-> Graf[Grafana]
+```text
+$ ID=$(curl -s -X POST localhost:8080/api/v1/incidents -H 'Content-Type: application/json' \
+    -d @docs/examples/packet_loss.json | jq -r .id)
+$ curl -s -X POST localhost:8080/api/v1/incidents/$ID/investigate -H 'Content-Type: application/json' \
+    -d '{"scenario":"packet_loss"}' | jq '{status: .investigation.status, evidence: [.evidence[] | "\(.source) \(.health): \(.summary)"], root_cause: .report.analysis.root_cause, confidence: .report.analysis.confidence, severity: .report.analysis.severity}'
+{
+  "status": "completed",
+  "evidence": [
+    "dns healthy: gw.waw01.example.net resolved to 10.20.30.40",
+    "ping degraded: 18% packet loss, avg latency 47.2 ms",
+    "tcp healthy: TCP gw.waw01.example.net:443 reachable, handshake 51.3 ms"
+  ],
+  "root_cause": "Packet loss on the network path",
+  "confidence": 0.8,
+  "severity": "high"
+}
 ```
 
-Investigation workflow:
+- The application picks the diagnostics, their arguments and order from a hard-coded allowlist (`dns`, `ping`, `tcp`); the LLM only analyzes and cannot run anything. `ping` runs with fixed argv, no shell.
+- LLM output is decoded strictly and validated; an analysis that cites a diagnostic that was not collected is rejected and never stored.
+- A diagnostic that fails to run is recorded and passed to the analyzer as missing, never read as healthy.
+- Executions, evidence and the report are stored in one transaction. On `SIGTERM` running investigations are saved as `failed` with the evidence so far; investigations orphaned by a crash are marked `failed` at startup.
+- When the analysis fails, the API answers `502` and still returns the stored executions and evidence.
 
-1. Take a concurrency slot (HTTP 429 if all are busy).
-2. Load the incident and create an investigation record (`running`).
-3. Build a deterministic plan: `dns` (hostnames only), then `ping`, then `tcp` (only when a port is set).
-4. Run each tool with its own timeout. A tool that cannot run is recorded as a failed execution and the investigation continues.
-5. Normalize results into evidence (`healthy`, `degraded`, `down`) and send them to the provider, together with the names of diagnostics that failed to run, so a missing check is never read as a healthy one.
-6. Validate the analysis. Invalid or hallucinated output is rejected and never stored as a report.
-7. Persist executions, evidence and the report in **one transaction**, with a context detached from the request so an investigation can never be left `running`. On `SIGTERM` in-flight investigations are interrupted and stored as `failed` with the evidence gathered so far (within 15 s). At startup, investigations still `running` longer than `INVESTIGATION_TIMEOUT` + 15 s (orphaned by a crash) are marked `failed`; the margin keeps other live replicas' work untouched.
+## Install
 
-The engine does not know whether the tools it receives are real or simulated.
-
-## Technology Stack
-
-| Area | Choice |
-|------|--------|
-| Language | Go 1.27 (standard library HTTP router, `log/slog`) |
-| Database | PostgreSQL 17 via `pgx/v5`, plain SQL |
-| Metrics | Prometheus `client_golang`, Grafana dashboard |
-| LLM | OpenAI Chat Completions and Ollama over plain HTTP (no vendor SDKs) |
-| Frontend | React 19, TypeScript, Vite, Tailwind CSS, embedded with `go:embed` |
-| Packaging | Multi-stage Docker (Node, Go, Alpine), Docker Compose, Kubernetes (kustomize) |
-| CI | GitHub Actions: gofmt, go vet, golangci-lint, race tests, integration tests, govulncheck, npm audit, Docker build |
-
-Direct Go dependencies: `pgx` and `prometheus/client_golang`, nothing else.
-
-## Quick Start
-
-Requirements: Docker with Compose v2.
+Requires Docker with Compose v2.
 
 ```bash
+git clone https://github.com/kmpoltorak/ai-network-incident-investigator.git
+cd ai-network-incident-investigator
 cp .env.example .env
+```
+
+## Quick start
+
+```bash
 docker compose up --build
 ```
 
-Then open **http://localhost:8080**, pick a sample (Packet loss, DNS or TCP), create the incident and click **Run investigation**.
-
-Optional profiles:
-
-```bash
-# Local LLM: starts Ollama and pulls llama3.2 (about 2 GB) on first run
-LLM_PROVIDER=ollama docker compose --profile ollama up --build
-
-# Monitoring: Prometheus on :9090, Grafana on :3000 (dashboard is provisioned)
-docker compose --profile monitoring up --build
-```
-
-Running locally without Docker (needs Go 1.27 and a PostgreSQL instance):
+Open http://localhost:8080, pick a sample (packet loss, DNS or TCP), create the
+incident and click **Run investigation**. Optional profiles:
 
 ```bash
-cp .env.example .env      # adjust DATABASE_URL
-make web                  # optional: build the UI into the binary
-make run
+LLM_PROVIDER=ollama docker compose --profile ollama up --build   # Ollama, pulls llama3.2 (~2 GB)
+docker compose --profile monitoring up --build                   # Prometheus :9090, Grafana :3000
 ```
 
-## Example Incident
-
-Sample payloads live in [`docs/examples/`](docs/examples/).
-
-```bash
-curl -s -X POST localhost:8080/api/v1/incidents \
-  -H 'Content-Type: application/json' \
-  -d @docs/examples/packet_loss.json
-```
-
-```json
-{
-  "id": "6ab33712-7aec-47ce-9762-d5b92be60af2",
-  "title": "Warehouse WAW-01 has intermittent connectivity",
-  "description": "Handheld scanners in warehouse WAW-01 lose connection to the WMS every few minutes since 08:00. Wired terminals are also affected.",
-  "target_host": "gw.waw01.example.net",
-  "target_port": 443,
-  "status": "open",
-  "created_at": "2026-09-23T19:23:34.49Z",
-  "updated_at": "2026-09-23T19:23:34.49Z"
-}
-```
-
-## Example Investigation
-
-```bash
-curl -s -X POST localhost:8080/api/v1/incidents/6ab33712-7aec-47ce-9762-d5b92be60af2/investigate \
-  -H 'Content-Type: application/json' -d '{"scenario":"packet_loss"}'
-```
-
-Response (abridged):
-
-```json
-{
-  "investigation": { "id": "fedee72a-…", "status": "completed", "scenario": "packet_loss" },
-  "tool_executions": [
-    { "tool_name": "dns",  "status": "succeeded", "duration_ms": 0 },
-    { "tool_name": "ping", "status": "succeeded", "duration_ms": 0 },
-    { "tool_name": "tcp",  "status": "succeeded", "duration_ms": 0 }
-  ],
-  "evidence": [
-    { "source": "dns",  "health": "healthy",  "summary": "gw.waw01.example.net resolved to 10.20.30.40" },
-    { "source": "ping", "health": "degraded", "summary": "18% packet loss, avg latency 47.2 ms" },
-    { "source": "tcp",  "health": "healthy",  "summary": "TCP gw.waw01.example.net:443 reachable, handshake 51.3 ms" }
-  ],
-  "report": {
-    "provider": "rules/rules-v1",
-    "analysis": {
-      "summary": "18% packet loss towards gw.waw01.example.net indicates WAN or link degradation.",
-      "root_cause": "Packet loss on the network path",
-      "confidence": 0.8,
-      "severity": "high",
-      "evidence": [{ "source": "ping", "description": "18% packet loss, avg latency 47.2 ms" }],
-      "possible_causes": ["physical link degradation (optics, cabling)", "congested WAN or ISP circuit", "duplex mismatch or interface errors"],
-      "recommended_actions": ["check interface error and discard counters along the path", "verify ISP circuit health with the provider", "run an extended ping or MTR to locate the lossy hop"]
-    }
-  }
-}
-```
-
-Results for the three reference incidents:
-
-| Incident | Scenario | Root cause (rules) | Root cause (llama3.2) |
-|----------|----------|--------------------|-----------------------|
-| Warehouse WAW-01 has intermittent connectivity | `packet_loss` | Packet loss on the network path | Network congestion or packet loss |
-| Users cannot resolve internal application hostnames | `dns_failure` | DNS resolution failure | DNS resolution failure for app.corp.example.com |
-| Application cannot connect to the database service | `tcp_failure` | TCP connectivity failure: service port unreachable | connection refused due to unreachable host |
-
-## API Usage
-
-| Method | Path | Description | Success | Errors |
-|--------|------|-------------|---------|--------|
-| POST | `/api/v1/incidents` | Create an incident | 201 + `Location` | 400, 413 |
-| GET | `/api/v1/incidents?limit=&offset=` | List, newest first (limit ≤ 100) | 200 | 400 |
-| GET | `/api/v1/incidents/{id}` | Get one incident | 200 | 400, 404 |
-| POST | `/api/v1/incidents/{id}/investigate` | Run an investigation (body optional: `{"scenario": "..."}`) | 201 | 400, 404, 429, 502 |
-| GET | `/api/v1/incidents/{id}/report` | Latest completed investigation | 200 | 404 |
-| GET | `/health` | Liveness | 200 | |
-| GET | `/ready` | Readiness (database ping) | 200 | 503 |
-| GET | `/metrics` | Prometheus metrics | 200 | |
-
-All errors share one shape:
-
-```json
-{ "error": { "code": "validation_failed", "message": "target_host: must be a valid hostname or IP address" }, "request_id": "4f0c…" }
-```
-
-When the analysis fails (for example, the model returns invalid JSON), the API responds **502** with `error.code = "analysis_failed"` and a `result` field containing the stored executions and evidence, so the diagnostics are never lost.
-
-Send `X-Request-ID` and W3C `traceparent` headers to correlate logs. Both are validated and echoed back or generated.
+Without Docker (Go 1.27 and PostgreSQL): set `DATABASE_URL` in `.env`, then
+`make web` (optional, embeds the UI) and `make run`.
 
 ## Configuration
 
-All settings come from environment variables. Invalid values stop startup with a message naming every bad variable.
+Environment variables. Invalid values stop startup with a message naming every
+bad variable.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
+| Variable | Default | Meaning |
+|---|---|---|
 | `APP_ENV` | `development` | `development` or `production` |
-| `HTTP_PORT` | `8080` | Listen port |
+| `HTTP_PORT` | `8080` | listen port |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `DATABASE_URL` | required | PostgreSQL connection string |
 | `LLM_PROVIDER` | `rules` | `rules`, `openai`, `ollama` |
 | `LLM_MODEL` | per provider | `gpt-4o-mini` (openai), `llama3.2` (ollama) |
-| `LLM_TIMEOUT` | `60s` | Timeout per LLM request |
-| `OPENAI_API_KEY` | | Required when `LLM_PROVIDER=openai` |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Any OpenAI-compatible endpoint |
+| `LLM_TIMEOUT` | `60s` | per LLM request |
+| `OPENAI_API_KEY` | | required for `openai` |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | any OpenAI-compatible endpoint |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server |
-| `SIMULATION_ENABLED` | `true` | Use simulated diagnostics |
-| `SIMULATION_SCENARIO` | `healthy` | Default scenario |
-| `INVESTIGATION_TIMEOUT` | `90s` | Whole-investigation deadline |
-| `MAX_CONCURRENT_INVESTIGATIONS` | `4` | Further requests get 429 |
+| `SIMULATION_ENABLED` | `true` | simulated diagnostics |
+| `SIMULATION_SCENARIO` | `healthy` | default scenario |
+| `INVESTIGATION_TIMEOUT` | `90s` | whole investigation |
+| `MAX_CONCURRENT_INVESTIGATIONS` | `4` | more get `429` with `Retry-After` |
 
-## Simulation Mode
-
-With `SIMULATION_ENABLED=true`, the diagnostics are replaced by simulated tools that return the **same result types** as the real ones, with fixed values per scenario:
+**Simulation.** Scenarios return fixed values in the same types as the real tools:
 
 | Scenario | dns | ping | tcp |
-|----------|-----|------|-----|
+|---|---|---|---|
 | `healthy` | resolves | 0% loss, 12.4 ms | reachable, 14.1 ms |
-| `packet_loss` | resolves | **18% loss**, 47.2 ms | reachable, 51.3 ms |
-| `dns_failure` | **NXDOMAIN** | healthy | healthy |
-| `tcp_failure` | resolves | healthy | **connection refused** |
-| `high_latency` | resolves | 0% loss, **381.6 ms** | reachable, **395.2 ms** |
+| `packet_loss` | resolves | 18% loss, 47.2 ms | reachable, 51.3 ms |
+| `dns_failure` | NXDOMAIN | healthy | healthy |
+| `tcp_failure` | resolves | healthy | connection refused |
+| `high_latency` | resolves | 0% loss, 381.6 ms | reachable, 395.2 ms |
 
-Choose the scenario per investigation with `{"scenario": "dns_failure"}` or set a default with `SIMULATION_SCENARIO`. Outside simulation mode, a scenario in the request returns 400.
+Pick one per investigation with `{"scenario": "..."}`; outside simulation mode
+that returns `400`. With `SIMULATION_ENABLED=false` the tools probe the real
+target: the OS `ping`, the Go resolver and a TCP handshake with no payload.
 
-With `SIMULATION_ENABLED=false`, the tools probe the real target: the OS `ping` binary (fixed arguments, no shell), the Go DNS resolver, and a TCP handshake with no payload.
+**Providers.** `rules` (default, no network) triages in order: resolution,
+reachability, ICMP filtering, service port, packet loss, latency, and concludes
+only from checks that ran. `openai` uses Chat Completions with a strict JSON
+schema; `ollama` uses `/api/chat` with the schema in `format`. Both run at
+temperature 0 with the prompt in
+[internal/llm/system_prompt.txt](internal/llm/system_prompt.txt).
 
-## LLM Providers
+## API
 
-| Provider | How it works |
-|----------|--------------|
-| `rules` | Deterministic analyzer that triages in the order an engineer would: resolution, then reachability, then ICMP filtering, then service port, then packet loss, then latency. It concludes only from checks that ran: "host unreachable" needs both ping and TCP down, slow but working TCP counts as reachable, and failed diagnostics lower confidence instead of looking healthy. No network access; the default. |
-| `openai` | Chat Completions with `response_format: json_schema` (strict) and temperature 0 |
-| `ollama` | `/api/chat` with the same JSON schema in `format`, `stream: false` and temperature 0 |
+| Method | Path | Success | Errors |
+|---|---|---|---|
+| POST | `/api/v1/incidents` | 201 + `Location` | 400, 413 |
+| GET | `/api/v1/incidents?limit=&offset=` (limit ≤ 100, newest first) | 200 | 400 |
+| GET | `/api/v1/incidents/{id}` | 200 | 400, 404 |
+| POST | `/api/v1/incidents/{id}/investigate` (body optional) | 201 | 400, 404, 429, 502 |
+| GET | `/api/v1/incidents/{id}/report` (latest completed) | 200 | 404 |
+| GET | `/health`, `/ready` (database ping), `/metrics` | 200 | 503 (`/ready`) |
 
-The system prompt ([`internal/llm/system_prompt.txt`](internal/llm/system_prompt.txt)) requires the model to use only the supplied evidence, separate observations (`evidence`) from hypotheses (`possible_causes`), lower its confidence and admit uncertainty when evidence is weak, and return a single JSON object.
+Errors look like `{"error": {"code": "...", "message": "..."}, "request_id": "..."}`.
+Requests are strict JSON (unknown fields rejected, 1 MiB limit) and the target
+must be an RFC 1123 hostname or an IP. `X-Request-ID` and `traceparent` are
+validated and echoed or generated. Logs are JSON with request, trace,
+incident and investigation IDs; secrets are redacted. The `monitoring` profile
+provisions a Grafana dashboard from [deployments/grafana/](deployments/grafana/).
 
-Every response is decoded strictly (unknown fields, trailing data and missing or `null` required fields are rejected) and validated. An analysis citing a source that was not collected (for example `bgp`) is rejected, so hallucinated diagnostics never reach the database.
-
-## Testing
-
-```bash
-make test               # unit tests with the race detector
-make test-integration   # starts a disposable PostgreSQL container, runs integration tests
-make lint               # gofmt, go vet, golangci-lint
-```
-
-- **Unit tests** cover config parsing, host validation, ping output parsing (Linux, BusyBox, macOS), DNS and TCP tools, simulation scenarios, analysis validation, strict decoding, the OpenAI and Ollama clients against `httptest` servers, the rules provider, the engine with an in-memory store (tool failures, invalid output, cancellation, shutdown, concurrency limit) and the HTTP handlers.
-- **Integration tests** (`-tags integration`) cover migrations up and down, repository round-trips, orphaned-investigation cleanup and the full API over real PostgreSQL using the sample incidents.
-- **Deterministic AI evaluation** runs every scenario through the engine with the rules provider and requires the expected root-cause category.
-- **Live AI evaluation** (`-tags eval`, opt-in) runs the same cases against a real model:
-
-  ```bash
-  LLM_PROVIDER=ollama LLM_TIMEOUT=150s go test -tags eval -v ./internal/investigation/
-  ```
-
-  With `llama3.2` on CPU in Docker, it passed **5/5** scenarios in about 45 s each.
-
-## Observability
-
-- **Logs:** JSON (`log/slog`) with `request_id`, `trace_id`, `incident_id`, `investigation_id`, `tool_name`, `duration_ms` and `status`. Secrets are never logged, and the config is printed redacted.
-- **Metrics:** `http_requests_total`, `http_request_duration_seconds` (labeled by route pattern, never the raw path, and by method, with non-standard methods grouped as `OTHER`), `incidents_total`, `investigations_total`, `investigation_duration_seconds`, `diagnostic_tool_executions_total` (by tool and observed health), `diagnostic_tool_failures_total`, `llm_requests_total`, `llm_request_duration_seconds` and `llm_failures_total` (by reason: `request` or `invalid_output`).
-- **Dashboard:** [`deployments/grafana/`](deployments/grafana/) is provisioned automatically by the `monitoring` Compose profile.
-
-![Grafana dashboard](docs/images/grafana-dashboard.png)
-
-## Docker
-
-- Multi-stage build: `node:22-alpine` builds the UI, `golang:1.27-alpine` builds a static binary, and `alpine:3.22` is the runtime with `iputils-ping` and CA certificates.
-- About **35 MB**, runs as **UID 10001**, has a `HEALTHCHECK` on `/health`, and the binary is PID 1 and handles `SIGTERM` for graceful shutdown. Compose gives it `stop_grace_period: 30s` and Kubernetes `terminationGracePeriodSeconds: 30`, above the 15 s the app needs.
-- In Compose, the app container is `read_only`, with `cap_drop: [ALL]` and `no-new-privileges`. ICMP works without root through unprivileged ping sockets.
-
-| Profile | Services |
-|---------|----------|
-| default | `app`, `postgres` |
-| `ollama` | `ollama` plus a one-shot `ollama-pull` job for the model |
-| `monitoring` | `prometheus` (:9090), `grafana` (:3000) |
-
-## Kubernetes
-
-Manifests in [`deployments/kubernetes/`](deployments/kubernetes/) (kustomize): Namespace, ConfigMap, Deployment (2 replicas), Service and Ingress. PostgreSQL is expected to be provided externally.
+**Kubernetes.** [deployments/kubernetes/](deployments/kubernetes/) (kustomize)
+has the Namespace, ConfigMap, Deployment (2 replicas), Service and Ingress;
+PostgreSQL is external. Create the secret first (shape in
+`secret.example.yaml`, which is not in the kustomization):
 
 ```bash
 kubectl create namespace incident-investigator
@@ -292,67 +134,40 @@ kubectl -n incident-investigator create secret generic incident-investigator \
 kubectl apply -k deployments/kubernetes
 ```
 
-- Probes: readiness on `/ready`, liveness on `/health`. Resource requests and limits are set.
-- `securityContext`: non-root, read-only root filesystem, all capabilities dropped, `RuntimeDefault` seccomp, and no service account token.
-- Unprivileged ICMP through the namespaced safe sysctl `net.ipv4.ping_group_range`.
-- `secret.example.yaml` documents the secret shape and is **deliberately not** part of the kustomization.
-- Ingress annotations (ingress-nginx) handle per-client rate limiting and timeouts sized for synchronous investigations.
+The container runs as UID 10001 with a read-only root filesystem, no
+capabilities and `no-new-privileges` (plus `RuntimeDefault` seccomp in
+Kubernetes); ICMP works through unprivileged ping sockets.
 
-These manifests were checked on a local minikube cluster (v1.34).
+## Limitations
 
-## Security
+- The service probes whatever host a user gives it, and there is no authentication or target allowlist. Deploy it where that is acceptable.
+- Per-client rate limiting is left to the ingress.
+- Investigations are synchronous and the tools run one after another.
+- Diagnostics are DNS, ping and TCP only: no traceroute, MTR, interface counters, BGP or syslog.
+- The live AI evaluation has been run with `llama3.2` on CPU only (5/5 scenarios, about 45 s each). The OpenAI client is tested against a fake server.
+- The Kubernetes manifests were checked on minikube v1.34 only.
 
-- **No arbitrary execution:** the LLM never selects tools or arguments. The tool allowlist is hard-coded (`dns`, `ping`, `tcp`).
-- **Input validation at every boundary:** strict JSON (unknown fields rejected, 1 MiB limit), RFC 1123 hostname or IP validation applied by the API and again by every tool, UUID path IDs, and length limits.
-- **No shell:** `ping` runs through `exec.CommandContext` with fixed argv and `--` before the host.
-- **Output validation:** schema-constrained generation, strict decoding, domain validation and an evidence-source cross-check. Invalid output is never persisted.
-- **Provider errors:** only the HTTP status and the provider request ID are kept; response bodies and refusal texts are never logged, stored or returned to clients.
-- **Timeouts everywhere:** per tool, per LLM request, per investigation, database statement timeout, and HTTP read/write/idle timeouts.
-- **Resource limits:** bounded concurrent investigations (429 with `Retry-After`) and pagination caps. Per-client rate limiting belongs at the ingress.
-- **Secrets:** read only from the environment and redacted in logs. `.env` is git-ignored, and CI runs `govulncheck` and `npm audit`.
-- **Browser:** strict CSP (`default-src 'self'`), `nosniff`, `no-referrer`. The UI renders all data as text, never as HTML.
-- **Containers:** non-root, read-only filesystem, no capabilities.
+## Development
 
-**By design, the service probes the hosts users give it.** Deploy it where that is acceptable, or put it behind authentication (see the roadmap).
-
-## Project Structure
-
-```text
-cmd/api/                 entrypoint: server, `migrate up|down`
-internal/
-  api/                   HTTP handlers, middleware, embedded UI (ui/dist)
-  config/                environment configuration and validation
-  domain/                entities, analysis validation, host validation
-  incidents/             incident service
-  investigation/         investigation engine and AI evaluation tests
-  diagnostics/           ping, dns, tcp, simulation, toolbox
-  llm/                   provider interface, OpenAI, Ollama, rules, prompt
-  observability/         logging and Prometheus metrics
-  storage/               PostgreSQL store and migrator
-migrations/              embedded SQL migrations
-web/                     React + TypeScript + Vite + Tailwind UI
-deployments/
-  kubernetes/            kustomize manifests
-  prometheus/            scrape config
-  grafana/               dashboard and provisioning
-docs/                    sample incidents and screenshots
+```bash
+make test               # unit tests with the race detector
+make test-integration   # starts a disposable PostgreSQL container, runs integration tests
+make lint               # gofmt, go vet, golangci-lint
+LLM_PROVIDER=ollama LLM_TIMEOUT=150s go test -tags eval -v ./internal/investigation/   # live AI evaluation
 ```
 
-## Contributing
+Unit tests cover config, host validation, ping output parsing (Linux, BusyBox,
+macOS), each tool, the simulation, analysis validation and strict decoding, the
+OpenAI and Ollama clients against `httptest` servers, the engine with an
+in-memory store (tool failures, invalid output, cancellation, shutdown,
+concurrency limit) and the HTTP handlers. Integration tests (`-tags integration`)
+run migrations up and down and the full API against real PostgreSQL. A
+deterministic evaluation runs every scenario through the rules provider and
+checks the root-cause category. CI also runs `govulncheck`, `npm audit` and a
+Docker build.
 
-Workflow, testing and documentation rules for contributors and AI coding agents are in [AGENTS.md](AGENTS.md). `CLAUDE.md` imports it for Claude Code.
-
-## Roadmap
-
-- Traceroute and MTR diagnostics, and interface counters through device adapters (SNMP, gNMI)
-- BGP session diagnostics and syslog correlation
-- Alertmanager webhook intake, so alerts open incidents automatically
-- Authentication and role-based access control
-- Asynchronous investigations with progress streaming, and parallel tool execution
-- Per-deployment target allowlists (CIDR or domain)
-- Richer LLM evaluation: golden datasets, confidence calibration, per-model scoring
-- Helm chart and ArgoCD application
+Built with an AI coding assistant. I wrote the spec and reviewed every change.
 
 ## License
 
-[MIT](LICENSE)
+MIT, see [LICENSE](LICENSE).
