@@ -60,6 +60,22 @@ docker compose --profile monitoring up --build                   # Prometheus :9
 Without Docker (Go 1.27 and PostgreSQL): set `DATABASE_URL` in `.env`, then
 `make web` (optional, embeds the UI) and `make run`.
 
+## Shared monitoring
+
+For the same Ubuntu host as [kmpoltorak-monitoring-tools](https://github.com/kmpoltorak/kmpoltorak-monitoring-tools),
+start the monitoring stack first, then:
+
+```sh
+docker compose -f docker-compose.yml -f compose.monitoring.yaml up -d --build
+```
+
+This mode publishes the application on `127.0.0.1:18082` (override with
+`MONITORED_HTTP_PORT`) and joins its dedicated external monitoring network.
+Database ports stay internal and the local monitoring services stay disabled.
+The central dashboard filters metrics by this application's job; standalone dashboards are intended for their own Prometheus.
+Enable the matching target configuration in the monitoring repository.
+Its migration guide covers backups and rollback; application data volumes stay in this project.
+
 ## Configuration
 
 Environment variables. Invalid values stop startup with a message naming every
@@ -148,6 +164,8 @@ Kubernetes); ICMP works through unprivileged ping sockets.
 - The Kubernetes manifests were checked on minikube v1.34 only.
 
 ## Development
+
+Shared monitoring configuration: `python3 -m unittest discover -s tests -p 'test_shared_monitoring.py' -v` (Docker Compose 2.30+).
 
 ```bash
 make test               # unit tests with the race detector
