@@ -164,7 +164,7 @@ concurrency limit) and the HTTP handlers. Integration tests (`-tags integration`
 run migrations up and down and the full API against real PostgreSQL. A
 deterministic evaluation runs every scenario through the rules provider and
 checks the root-cause category. CI also runs `govulncheck`, `npm audit` and a
-Docker build.
+Docker build. Docker build record artifacts expire after three days.
 
 Built with an AI coding assistant. I wrote the spec and reviewed every change.
 
